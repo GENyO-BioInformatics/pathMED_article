@@ -1,4 +1,5 @@
 # Clone the github https://github.com/cclab-brca/neoadjuvant-therapy-response-predictor
+system("git clone https://github.com/cclab-brca/neoadjuvant-therapy-response-predictor")
 
 # Process data (adapted from https://github.com/cclab-brca/neoadjuvant-therapy-response-predictor)
 
@@ -7,7 +8,6 @@ library(data.table)
 library(edgeR)
 library(EnsDb.Hsapiens.v86)
 library(org.Hs.eg.db)
-library(Pigengene)
 library(readxl)
 library(pathMED)
 library(WriteXLS)
@@ -24,11 +24,12 @@ dir.create("SupplTables")
 # change the contents of variable baseDir to the root analysis folder
 baseDir <- "neoadjuvant-therapy-response-predictor-master/"
 # load directory structure downloaded from github site
-source (paste0(baseDir,"/R/LoadDirectoryStructure.R"))
-
+source(paste0(baseDir,"/R/LoadDirectoryStructure.R"))
+setwd("..")
 
 # load clinical metadata (Supplementary Table 1)
-metadata  <- data.frame(read_excel(paste0(suppTableDir,"Supplementary Tables.xlsx"),sheet = 1))
+metadata  <- data.frame(read_excel(paste0(suppTableDir, "/Supplementary Tables.xlsx"),sheet = 1))
+
 # combine ER and HER2 status
 metadata$ERHER2.status <- ifelse(metadata$ER.status=="POS","ER+ HER2-","ER- HER2-")
 metadata$ERHER2.status <- ifelse(metadata$HER2.status=="POS","HER2+",metadata$ERHER2.status)
@@ -39,9 +40,6 @@ metadataFull <- metadata
 metadata <- metadata[metadata$RCB.category!="NA",]
 metadata <- metadata[metadata$Chemo.cycles>1 & metadata$aHER2.cycles>1,]
 
-# load list of breast cancer driver genes from resources directory
-driverGenes<- scan(paste0(resourcesDir,"breast-cancer-driver-genes.txt"), what=character(),skip = 1)
-
 # load Gene Ensembl ID to Hugo ID dictionary
 ensemblToHugo <- read.table(paste0(resourcesDir,"EnsemblID.to.Hugo.v87.tsv.gz"), header=T, stringsAsFactors = F,sep="\t")
 
@@ -50,6 +48,7 @@ rnadata  <- data.frame(read_excel(paste0(suppTableDir,"Supplementary Tables.xlsx
 
 
 p <- metadata
+p$RCB.score <- as.numeric(p$RCB.score)
 
 # load RNAseq raw counts (Methods)
 transneo.counts <- data.frame(fread(paste0(dataDir,"transneo-diagnosis-RNAseq-rawcounts.tsv.gz"),header=T, sep="\t",stringsAsFactors = F),row.names = 1)
@@ -84,6 +83,8 @@ geneSetsList <- c("go_bp", "go_mf", "reactome", "kegg")
 
 resultsBRCA_binary <- list()
 modelsBRCA_binary <- list()
+scoresBRCA_binary <- list()
+
 
 # Calculate scores and train/validate predictive models of the binary pCR/RD outcome
 for (geneSet in geneSetsList) {
@@ -97,7 +98,7 @@ for (geneSet in geneSetsList) {
     varFeatures <- sort(varianceScores, decreasing = T)[1:nFeatures]
     
     exprScores <- exprScores[names(varFeatures),]
-    
+
     ########### Train with expression ##############
     set.seed(123)
     exprModel <- trainModel(exprScores, p, var2predict = "pCR.RD", 
@@ -126,13 +127,14 @@ for (geneSet in geneSetsList) {
     }
     
     modelsBRCA_binary[[geneSet]] <- exprModel$model
+    scoresBRCA_binary[[geneSet]] <- exprScores
 }
 
 # Estimate importance for each gene sets database
 importanceList_binary <- list()
 
-for (database in names(modelBRCA_binary)) {
-    importance <- varImp(modelBRCA_binary[[database]]$model, scale = F)[["importance"]]
+for (database in names(modelsBRCA_binary)) {
+    importance <- varImp(modelsBRCA_binary[[database]], scale = F)[["importance"]]
     importance_df <- data.frame(Feature = rownames(importance), Importance = importance[,1])
     importance_df <- importance_df[order(-importance_df$Importance), ]
     if (database %in% c("go_bp", "go_mf")) {
@@ -162,12 +164,13 @@ rownames(mergedImportances_binary) <- corrected_terms
 
 # Sort by importance
 mergedImportances_binary <- mergedImportances_binary[order(-mergedImportances_binary$Importance), ]
+mergedScores_binary <- do.call(rbind, scoresBRCA_binary)
 
 
 # Heatmap of top terms
 topFeatures <- unlist(lapply(importanceList_binary, function(x){return(rownames(x)[1:10])}))
 
-dataHeatmap <- t(scale(t(mergedScores[topFeatures,])))
+dataHeatmap <- t(scale(t(mergedScores_binary[topFeatures,])))
 
 columnAnnot <- "RCB.category"
 columnAnnot2 <- "RCB.score"
@@ -187,6 +190,8 @@ databases_colors <- setNames(brewer.pal(8, "Pastel1")[1:length(levels(annotDB))]
 # Continuous annotation: RCB.score
 annotCol2 <- as.numeric(p[[columnAnnot2]])
 names(annotCol2) <- rownames(p)
+
+RCBScore_range <- range(annotCol2, na.rm = TRUE)
 
 RCBScore_col_fun <- colorRamp2(
     breaks = seq(RCBScore_range[2], RCBScore_range[1], length.out = 3),
@@ -233,8 +238,17 @@ database_legend <- Legend(
     legend_gp = gpar(fill = databases_colors)
 )
 # Create the heatmap
+
+rng <- range(dataHeatmap, na.rm = TRUE)
+
+col_fun <- colorRamp2(
+    c(rng[1], 0, rng[2]),
+    c("#4C72B0", "white", "#DD8452")
+)
+
 ht <- Heatmap(dataHeatmap,
               name = "GSVA\nZ-score",
+              col = col_fun,
               column_order = colOrder,
               cluster_rows = TRUE,
               top_annotation = col_ha,
@@ -246,7 +260,7 @@ ht <- Heatmap(dataHeatmap,
 )
 
 # Draw heatmap and pack legends in one column
-pdf("figures/Figure3a.pdf", 8, 5, pointsize = 12)
+pdf("figures/Figure2a.pdf", 8, 5, pointsize = 12)
 draw(
     ht,
     annotation_legend_list = list(rcb_category_legend, rcb_score_legend, database_legend),
@@ -264,13 +278,8 @@ colnames(resultsMerged) <- names(resultsBRCA_binary)
 resultsMerged <- as.data.frame(t(resultsMerged))
 resultsMerged <- resultsMerged[,c(3, 7, 4, 5, 2, 8, 1, 6)]
 colnames(resultsMerged) <- c("Accuracy", "Precision", "Recall", "Specificity", "BalAcc", "FScore", "MCC", "NPV")
-WriteXLS(resultsMerged, "SupplTables/Supplementary Table 3.xlsx", row.names = T)
-WriteXLS(mergedImportances_binary, "SupplTables/Supplementary Table 5.xlsx", row.names = F)
-
-
-
-
-
+WriteXLS(resultsMerged, "SupplTables/Supplementary Table 2.xlsx", row.names = T)
+WriteXLS(mergedImportances_binary, "SupplTables/Supplementary Table 4.xlsx", row.names = F)
 
 
 
@@ -278,8 +287,8 @@ WriteXLS(mergedImportances_binary, "SupplTables/Supplementary Table 5.xlsx", row
 
 resultsBRCA <- list()
 modelsBRCA <- list()
+scoresBRCA <- list()
 
-# Calculate scores and train/validate predictive models of the binary pCR/RD outcome
 for (geneSet in geneSetsList) {
     
     # Calculate scores
@@ -297,7 +306,7 @@ for (geneSet in geneSetsList) {
     exprModel <- trainModel(exprScores, p, var2predict = "RCB.score", 
                             Koutter = 3, Kinner = 3,
                             models = methodsML("rf", 
-                                               "character", tuneLength = 100))
+                                               "numeric", tuneLength = 100))
     
     # Save results
     if (is.null(resultsBRCA[[geneSet]])) {
@@ -320,13 +329,14 @@ for (geneSet in geneSetsList) {
     }
     
     modelsBRCA[[geneSet]] <- exprModel$model
+    scoresBRCA [[geneSet]] <- exprScores
 }
 
 
 importanceList <- list()
 
-for (database in names(modelBRCA_RCB)) {
-    importance <- varImp(modelBRCA_RCB[[database]]$model, scale = F)[["importance"]]
+for (database in names(modelsBRCA)) {
+    importance <- varImp(modelsBRCA[[database]], scale = F)[["importance"]]
     importance_df <- data.frame(Feature = rownames(importance), Importance = importance[,1])
     importance_df <- importance_df[order(-importance_df$Importance), ]
     if (database %in% c("go_bp", "go_cc", "go_mf", "hpo")) {
@@ -346,6 +356,7 @@ for (database in names(modelBRCA_RCB)) {
 }
 
 mergedImportances <- do.call(rbind, importanceList)
+mergedScores <- do.call(rbind, scoresBRCA)
 
 corrected_terms <- c()
 for (database in names(importanceList)) {
@@ -355,7 +366,7 @@ for (database in names(importanceList)) {
 rownames(mergedImportances) <- corrected_terms
 
 mergedImportances <- mergedImportances[order(-mergedImportances$Importance), ]
-mergedScores <- do.call(rbind, scoresRCB)
+mergedScores <- do.call(rbind, scoresBRCA)
 
 
 
@@ -364,9 +375,7 @@ topFeatures <- unlist(lapply(importanceList, function(x){return(rownames(x)[1:10
 
 dataHeatmap <- t(scale(t(mergedScores[topFeatures,])))
 
-library(ComplexHeatmap)
-library(circlize)
-library(grid)
+
 
 columnAnnot <- "RCB.category"
 columnAnnot2 <- "RCB.score"
@@ -432,8 +441,17 @@ database_legend <- Legend(
     legend_gp = gpar(fill = databases_colors)
 )
 # Create the heatmap
+
+rng <- range(dataHeatmap, na.rm = TRUE)
+
+col_fun <- colorRamp2(
+    c(rng[1], 0, rng[2]),
+    c("#4C72B0", "white", "#DD8452")
+)
+
 ht <- Heatmap(dataHeatmap,
               name = "GSVA\nZ-score",
+              col = col_fun,
               column_order = colOrder,
               cluster_rows = TRUE,
               top_annotation = col_ha,
@@ -445,7 +463,7 @@ ht <- Heatmap(dataHeatmap,
 )
 
 # Draw heatmap and pack legends in one column
-pdf("figures/Figure3b.pdf", 8, 5, pointsize = 12)
+pdf("figures/Figure2b.pdf", 8, 5, pointsize = 12)
 draw(
     ht,
     annotation_legend_list = list(rcb_category_legend, rcb_score_legend, database_legend),
@@ -456,11 +474,10 @@ draw(
     )
 dev.off()
 
-resultsMerged <- do.call(cbind, resultsBRCA_RCB)
-colnames(resultsMerged) <- names(resultsBRCA_RCB)
+resultsMerged <- do.call(cbind, resultsBRCA)
+colnames(resultsMerged) <- names(resultsBRCA)
 resultsMerged <- as.data.frame(t(resultsMerged))
 resultsMerged <- resultsMerged[,-7]
 colnames(resultsMerged)[1] <- c("R")
-library(WriteXLS)
-WriteXLS(resultsMerged, "SupplTables/Supplementary Table 4.xlsx", row.names = T)
-WriteXLS(mergedImportances, "SupplTables/Supplementary Table 6.xlsx", row.names = F)
+WriteXLS(resultsMerged, "SupplTables/Supplementary Table 3.xlsx", row.names = T)
+WriteXLS(mergedImportances, "SupplTables/Supplementary Table 5.xlsx", row.names = F)

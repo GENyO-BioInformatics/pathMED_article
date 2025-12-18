@@ -3,6 +3,12 @@ library(pathMED)
 library(biomaRt)
 library(ggplot2)
 library(WriteXLS)
+suggest <- c("ada","AUCell", "Biobase", "BiocGenerics", "BiocStyle", "doMC", "fgsea", "gam", "GSEABase", "import", "kernlab", "klaR", "knitr", "mboost", "MLeval",
+         "randomForest", "ranger", "rmarkdown", "RUnit", "SummarizedExperiment", "utils", "xgboost")
+for(i in suggest){library(i,character.only = T)}
+
+# Save in this variable the number of CPUs to be used (default = 10)
+ncores <- 10
 
 # Download data from https://kb.linkedomics.org/download#LUAD and save into 
 # LinkedOmicsKB folder
@@ -16,22 +22,26 @@ metadata <- read.delim("LinkedOmicsKB_LUAD/LUAD_meta.txt")
 metadata <- metadata[-1,]
 rownames(metadata) <- metadata[,1]
 
-pheno <- read.delim("LinkedOmicsKB_LUAD/LUAD_phenotype.txt")
-
 # Read and process omics data
 exprTumor <- read.delim("LinkedOmicsKB_LUAD/LUAD_RNAseq_gene_RSEM_coding_UQ_1500_log2_Tumor.txt", row.names = 1)
 protTumor <- read.delim("LinkedOmicsKB_LUAD/LUAD_proteomics_gene_abundance_log2_reference_intensity_normalized_Tumor.txt", row.names = 1)
+exprNormal <- read.delim("LinkedOmicsKB_LUAD/LUAD_RNAseq_gene_RSEM_coding_UQ_1500_log2_Normal.txt", row.names = 1)
+protNormal <- read.delim("LinkedOmicsKB_LUAD/LUAD_proteomics_gene_abundance_log2_reference_intensity_normalized_Normal.txt", row.names = 1)
+
 
 ## Discard genes in pseudoautosomal regions
 exprTumor <- exprTumor[grep("PAR", rownames(exprTumor), invert = T),]
+exprNormal <- exprNormal[grep("PAR", rownames(exprNormal), invert = T),]
 
 # Remove ENSEMBL version numbers
 rownames(exprTumor) <- gsub("\\..*", "", rownames(exprTumor))
 rownames(protTumor) <- gsub("\\..*", "", rownames(protTumor))
+rownames(exprNormal) <- gsub("\\..*", "", rownames(exprNormal))
+rownames(protNormal) <- gsub("\\..*", "", rownames(protNormal))
 
 # Translate ENSEMBL IDs to Gene Symbols
 
-## Transcriptomics
+## Transcriptomics tumor
 mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
 G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id","hgnc_symbol"),
                 values=rownames(exprTumor),mart = mart)
@@ -46,7 +56,16 @@ rownames(exprTumor_symbol) <- exprTumor_symbol[,1]
 exprTumor_symbol <- exprTumor_symbol[,-1]
 exprTumor_symbol <- exprTumor_symbol[,-ncol(exprTumor_symbol)]
 
-## Proteomics
+## Transcriptomics normal
+exprNormal <- exprNormal[rownames(exprNormal) %in% G_list[,1],]
+exprNormal$GeneSymbol <- G_list[rownames(exprNormal), 2]
+exprNormal_symbol <- aggregate(exprNormal, list(exprNormal$GeneSymbol), median)
+exprNormal_symbol <- na.omit(exprNormal_symbol)
+rownames(exprNormal_symbol) <- exprNormal_symbol[,1]
+exprNormal_symbol <- exprNormal_symbol[,-1]
+exprNormal_symbol <- exprNormal_symbol[,-ncol(exprNormal_symbol)]
+
+## Proteomics tumor
 mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
 G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id","hgnc_symbol"),
                 values=rownames(protTumor),mart = mart)
@@ -62,13 +81,22 @@ protTumor_symbol <- protTumor_symbol[,-1]
 protTumor_symbol <- protTumor_symbol[,-ncol(protTumor_symbol)]
 
 
+## Proteomics normal
+protNormal <- protNormal[rownames(protNormal) %in% G_list[,1],]
+protNormal$GeneSymbol <- G_list[rownames(protNormal), 2]
+protNormal_symbol <- aggregate(protNormal, list(protNormal$GeneSymbol), median)
+protNormal_symbol <- na.omit(protNormal_symbol)
+rownames(protNormal_symbol) <- protNormal_symbol[,1]
+protNormal_symbol <- protNormal_symbol[,-1]
+protNormal_symbol <- protNormal_symbol[,-ncol(protNormal_symbol)]
+
 resultsList <- list()
 
 for (iteration in seq_len(10)) {
-
-    #### Use different samples for training and validation
+    cat("Iteration:",iteration,"\n")
     set.seed(iteration)
     
+    #### Use different samples for training and validation
     samplesExprNormal <- sample(colnames(exprNormal_symbol), round(ncol(exprNormal_symbol) * 0.75), replace = F)
     samplesProtNormal <- colnames(protNormal_symbol)[!colnames(protNormal_symbol) %in% samplesExprNormal]
     
@@ -110,9 +138,14 @@ for (iteration in seq_len(10)) {
                     "MDT", "MLM", "ORA", "UDT", "ULM",
                     "FGSEA", "norm_FGSEA", "WMEAN", "norm_WMEAN",
                     "corr_WMEAN", "WSUM", "norm_WSUM", "corr_WSUM")) {
-
-        exprScores <- getScores(exprMerged, "go_bp", method = score, cores = 10)
-        protScores <- getScores(protMerged, "go_bp", method = score, cores = 10)
+        cat("Calculating",score,"score \n")
+      
+        exprScores <- getScores(exprMerged, "go_bp", method = score, cores = ncores)
+        protScores <- getScores(protMerged, "go_bp", method = score, cores = ncores)
+        
+        # Center scores to 0 by omic type
+        exprScores <- t(apply(exprScores, 1, function(x) x-mean(x)))
+        protScores <- t(apply(protScores, 1, function(x) x-mean(x)))
         
         commonPathways <- intersect(rownames(na.omit(exprScores)), rownames(na.omit(protScores)))
         exprScores <- exprScores[commonPathways,]
@@ -177,42 +210,31 @@ for (iteration in seq_len(10)) {
 }
 
 
-# Figure 1
-dataBarplot <- matrix(NA, nrow = length(resultsList[["GSVA"]][["svmLinear"]]), 
-                      ncol = length(resultsList), dimnames = list(names(resultsList[["GSVA"]][["svmLinear"]]),
-                                                                  names(resultsList)))
-for (method in colnames(dataBarplot)) {
-    for (score in rownames(dataBarplot)) {
-        dataBarplot[score, method] <- mean(resultsList[[method]][["svmLinear"]][[score]])
+# Table 1
+meansDF <- matrix(NA, nrow = length(resultsList[["GSVA"]][["svmLinear"]]), 
+                  ncol = length(resultsList), dimnames = list(names(resultsList[["GSVA"]][["svmLinear"]]),
+                                                              names(resultsList)))
+sdsDF <- meansDF
+
+for (method in colnames(meansDF)) {
+    for (score in rownames(meansDF)) {
+        meansDF[score, method] <- mean(resultsList[[method]][["svmLinear"]][[score]])
+        sdsDF[score, method] <- sd(resultsList[[method]][["svmLinear"]][[score]])
     }
 }
-dataBarplot <- apply(dataBarplot, 2, function(x) {x[is.na(x)] <- 0; return(x)})
-dataBarplot <- data.frame(dataBarplot)
 
-dataSuppl <- data.frame(t(dataBarplot))[]
-colnames(dataSuppl) <- c("Accuracy", "Precision", "Recall", "Specificity", "BalAcc", "FScore", "MCC", "NPV")
+meansDF <- meansDF[,order(meansDF["mcc",], decreasing = T)]
 
-WriteXLS(dataSuppl, "SupplTables/Supplementary Table 1.xlsx", row.names = T)
+meansDF2 <- lapply(seq_len(ncol(meansDF)), function(x) {paste0(as.character(round(unlist(meansDF[,x]), 2)), " (",
+                                                   as.character(round(unlist(sdsDF[,x]), 2)), ")")})
 
-topMethods <- names(sort(dataBarplot["accuracy",], decreasing = T))[1:5]
-dataBarplot <- dataBarplot[c("accuracy", "recall", "precision", "specificity", "fscore", "mcc"),topMethods]
+meansDF2 <- t(do.call("cbind", meansDF2))
 
-dataBarplot <- stack(dataBarplot)
-dataBarplot$metric <- factor(rep(c("Accuracy", "Recall", "Precision",  "Specificity", "F1", "MCC"), 5))
+rownames(meansDF2) <- colnames(meansDF)
+colnames(meansDF2) <- rownames(meansDF)
 
-p <- ggplot(dataBarplot, aes(x=factor(metric, c("Accuracy", "Recall", "Precision",  "Specificity", "F1", "MCC")), y=values, fill=ind)) +
-    geom_bar(position = "dodge", stat = "identity", color = "black") +
-    xlab("Metric") +
-    ylab("Value") +
-    theme_classic() +
-    scale_fill_jco() +
-    ylim(0,1) +
-    labs(fill="Method") +
-    theme(legend.position = "top", legend.key.size = unit(0.02, "npc"),
-          legend.text = element_text(size=8),
-          legend.title = element_text(size=8))
-
-ggsave("figures/Figure2.pdf", p, scale=1.2, width = 3.5, height = 2.4)
+colnames(meansDF2) <- c("Accuracy", "Precision", "Recall", "Specificity", "BalAcc", "FScore", "MCC", "NPV")
+WriteXLS(meansDF2, "Table 1.xlsx", row.names = T)
 
 
 
@@ -220,7 +242,7 @@ ggsave("figures/Figure2.pdf", p, scale=1.2, width = 3.5, height = 2.4)
 data(genesetsData)
 geneSetsList <- genesetsData
 
-resultsList <- list()
+resultsListGenesets <- list()
 
 for (iteration in seq_len(10)) {
     cat(iteration)
@@ -270,6 +292,10 @@ for (iteration in seq_len(10)) {
         exprScores <- getScores(exprMerged, geneSetsList[[geneSet]], method = "Z-score")
         protScores <- getScores(protMerged, geneSetsList[[geneSet]], method = "Z-score")
         
+        # Center scores to 0 by omic type
+        exprScores <- t(apply(exprScores, 1, function(x) x-mean(x)))
+        protScores <- t(apply(protScores, 1, function(x) x-mean(x)))
+        
         commonPathways <- intersect(rownames(na.omit(exprScores)), rownames(na.omit(protScores)))
         exprScores <- exprScores[commonPathways,]
         protScores <- protScores[commonPathways,]
@@ -287,39 +313,39 @@ for (iteration in seq_len(10)) {
             
             rownames(prediction$stats) <- prediction$stats[,1]
             
-            if (is.null(resultsList[[geneSet]])) {
-                resultsList[[geneSet]] <- list()
+            if (is.null(resultsListGenesets[[geneSet]])) {
+                resultsListGenesets[[geneSet]] <- list()
             }
             
             for (metric in prediction$stats[,1]){
-                if (is.null(resultsList[[geneSet]][[metric]])) {
-                    resultsList[[geneSet]][[metric]] <- prediction$stats[metric,2]
+                if (is.null(resultsListGenesets[[geneSet]][[metric]])) {
+                    resultsListGenesets[[geneSet]][[metric]] <- prediction$stats[metric,2]
                 }
                 else {
-                    resultsList[[geneSet]][[metric]] <- c(resultsList[[geneSet]][[metric]], prediction$stats[metric,2])
+                    resultsListGenesets[[geneSet]][[metric]] <- c(resultsListGenesets[[geneSet]][[metric]], prediction$stats[metric,2])
                     
                 }
             }
         }
         
         else {
-            if (is.null(resultsList[[geneSet]])) {
-                resultsList[[geneSet]] <- list()
+            if (is.null(resultsListGenesets[[geneSet]])) {
+                resultsListGenesets[[geneSet]] <- list()
             }
             
-            if (is.null(resultsList[[geneSet]])) {
-                resultsList[[geneSet]] <- list()
+            if (is.null(resultsListGenesets[[geneSet]])) {
+                resultsListGenesets[[geneSet]] <- list()
             }
             
             for (metric in c(
                 "mcc", "balacc", "accuracy", "recall", "specificity",
                 "npv", "precision", "fscore"
             )){
-                if (is.null(resultsList[[geneSet]][[metric]])) {
-                    resultsList[[geneSet]][[metric]] <- NA
+                if (is.null(resultsListGenesets[[geneSet]][[metric]])) {
+                    resultsListGenesets[[geneSet]][[metric]] <- NA
                 }
                 else {
-                    resultsList[[geneSet]][[metric]] <- c(resultsList[[geneSet]][[metric]], NA)
+                    resultsListGenesets[[geneSet]][[metric]] <- c(resultsListGenesets[[geneSet]][[metric]], NA)
                     
                 }
             }
@@ -334,14 +360,12 @@ for (metric in c(
     "mcc", "balacc", "accuracy", "recall", "specificity",
     "npv", "precision", "fscore"
 )){
-    meansList[[metric]] <- lapply(resultsList, function(x) {mean(x[[metric]])})
-    sdsList[[metric]] <- lapply(resultsList, function(x) {sd(x[[metric]])})
+    meansList[[metric]] <- lapply(resultsListGenesets, function(x) {mean(x[[metric]])})
+    sdsList[[metric]] <- lapply(resultsListGenesets, function(x) {sd(x[[metric]])})
 }
 
 meansDF <- do.call(cbind, meansList)
 sdsDF <- do.call(cbind, sdsList)
-meansDF2 <- lapply(seq_len(8), function(x) {paste0(as.character(round(unlist(meansDF[,x], 4))), " (",
-                                                   as.character(round(unlist(sdsDF[,x], 4))), ")")})
 
 mergedFormatted <- as.data.frame(
     mapply(function(meanCol, sdCol) {
@@ -349,5 +373,5 @@ mergedFormatted <- as.data.frame(
     }, meansList, sdsList, SIMPLIFY = FALSE)
 )
 rownames(mergedFormatted) <- rownames(meansDF)
-WriteXLS(mergedFormatted, ExcelFileName = "SupplTables/Supplementary Table 2.xlsx", row.names = T, col.names = T)
+WriteXLS(mergedFormatted, ExcelFileName = "SupplTables/Supplementary Table 1.xlsx", row.names = T, col.names = T)
 
