@@ -47,9 +47,13 @@ dataList <- buildRefObject(data=list(exprData), metadata = list(clin),
 data(genesetsData)
 REAC <- genesetsData[["reactome"]]
 
-REAC.d <- dissectDB(refObject = dataList, geneSets = "reactome",
-                minPathSize = 8, minSplitSize = 3, maxSplits = NULL,
-                explainedVariance = 70, percSharedGenes = 90)
+timingDissect <- system.time({
+    REAC.d <- dissectDB(refObject = dataList, geneSets = "reactome",
+                        minPathSize = 8, minSplitSize = 3, maxSplits = NULL,
+                        explainedVariance = 70, percSharedGenes = 90)
+    
+})
+
 
 ## Remove co-linear genesets
 dbs <- list("reactome" = REAC, "reactome.f" = REAC.d)
@@ -88,41 +92,104 @@ algs <- c("M-Scores", "GSVA", "ssGSEA", "singscore", "Plage", "Z-score", "AUCell
         "MDT", "MLM", "ORA", "UDT", "ULM", "FGSEA", "norm_FGSEA", "WMEAN", 
         "norm_WMEAN", "corr_WMEAN", "WSUM", "norm_WSUM", "corr_WSUM")
 
-SCORES <- list()
-SCORES.d <- list()
-gc()
+# SCORES <- list()
+# SCORES.d <- list()
+# gc()
+# 
+# for(i in 1:length(algs)){
+#   alg <- algs[i]
+#   print(alg)
+#   
+#   if(alg=="MLM"){
+#     gnset <- dbs.f[[1]]
+#   } else{
+#     gnset <- dbs[[1]]
+#   }
+#   
+#   ncores <- ifelse(alg %in% c("M-Scores", "MDT", "UDT", "ULM"), detectCores()-2, 1)
+#   SCORES[[alg]] <- getScores(inputData = exprData, geneSets = gnset, method = alg,
+#                  labels = labels,cores = ncores)
+#   gc()
+# }
+# 
+# for(i in 1:length(algs)){
+#   alg <- algs[i]
+#   print(alg)
+#   
+#   if(alg=="MLM"){
+#     gnset <- dbs.f[[2]]
+#   } else{
+#     gnset <- dbs[[2]]
+#   }
+#   
+#   ncores <- ifelse(alg %in% c("M-Scores", "MDT", "UDT", "ULM"), detectCores()-2, 1)
+#   SCORES.d[[alg]] <- getScores(inputData = exprData, geneSets = gnset, method = alg,
+#                            labels = labels, cores = ncores)
+#   gc()
+# }
 
-for(i in 1:length(algs)){
-  alg <- algs[i]
-  print(alg)
-  
-  if(alg=="MLM"){
-    gnset <- dbs.f[[1]]
-  } else{
-    gnset <- dbs[[1]]
-  }
-  
-  ncores <- ifelse(alg %in% c("M-Scores", "MDT", "UDT", "ULM"), detectCores()-2, 1)
-  SCORES[[alg]] <- getScores(inputData = exprData, geneSets = gnset, method = alg,
-                 labels = labels,cores = ncores)
-  gc()
+# New code for revision
+
+run_scores <- function(db_obj) {
+    
+    scores_list <- list()
+    perf_list   <- list()
+    
+    for (alg in algs) {
+        
+        cat("Running:", alg, "\n")
+        
+        # Select correct gene set
+        gnset <- if (alg == "MLM") dbs.f[[db_obj]] else dbs[[db_obj]]
+        
+        # Select number of cores
+        ncores <- if (alg %in% c("M-Scores", "MDT", "UDT", "ULM")) {
+            detectCores() - 2
+        } else {
+            1
+        }
+        
+        # Measure time + memory
+        timing <- system.time({
+            scores_list[[alg]] <- getScores(
+                inputData = exprData,
+                geneSets  = gnset,
+                method    = alg,
+                labels    = labels,
+                cores     = ncores
+            )
+
+        })
+        
+        perf_list[[alg]] <- data.frame(
+            Algorithm = alg,
+            Time_sec  = unname(timing["elapsed"])
+            )
+        
+        gc()
+    }
+    
+    list(
+        scores = scores_list,
+        performance = do.call(rbind, perf_list)
+    )
 }
 
-for(i in 1:length(algs)){
-  alg <- algs[i]
-  print(alg)
-  
-  if(alg=="MLM"){
-    gnset <- dbs.f[[2]]
-  } else{
-    gnset <- dbs[[2]]
-  }
-  
-  ncores <- ifelse(alg %in% c("M-Scores", "MDT", "UDT", "ULM"), detectCores()-2, 1)
-  SCORES.d[[alg]] <- getScores(inputData = exprData, geneSets = gnset, method = alg,
-                           labels = labels, cores = ncores)
-  gc()
-}
+res1 <- run_scores(1)
+SCORES   <- res1$scores
+PERF     <- res1$performance
+
+res2 <- run_scores(2)
+SCORES.d <- res2$scores
+PERF.d   <- res2$performance
+
+SupplTable7 <- cbind(PERF, PERF.d[,2,drop=F])
+colnames(SupplTable7)[2:3] <- c("Time_original", "Time_dissected")
+SupplTable7$Difference_s <- SupplTable7$Time_dissected - SupplTable7$Time_original
+SupplTable7$Difference_p <- SupplTable7$Difference_s / SupplTable7$Time_original * 100
+
+WriteXLS(SupplTable7, "SupplTables/Supplementary Table 7.xlsx", row.names = F)
+
 
 ## Correlation with disease activity ----
 
@@ -275,5 +342,100 @@ supplTable6$Genes.subset <- sapply(supplTable6$subset, function(x) {paste(REAC.d
 WriteXLS(supplTable6, "SupplTables/Supplementary Table 6.xlsx", row.names = F)
 
 
+## NEW FOR REVIEW
+## Run models
+
+statsOriginal <- list()
+statsDissected <- list()
+for (alg in algs) {
+    set.seed(123)
+    
+    exprModel <- tryCatch(trainModel(SCORES[[alg]], clin, var2predict = "MayScore", 
+                                     models = methodsML(c("rf", "knn", "svmLinear"),
+                                                        outcomeClass="numeric"), 
+                                     repeatsCV = 1),
+                          error = function(e) {NULL})
+    
+    if(!is.null(exprModel)) {
+        statsOriginal[[alg]] <- exprModel$stats
+    }
+    
+    set.seed(123)
+    
+    exprModel <- tryCatch(trainModel(SCORES.d[[alg]], clin, var2predict = "MayScore", 
+                                     models = methodsML(c("rf", "knn", "svmLinear"),
+                                                        outcomeClass="numeric"), 
+                                     repeatsCV = 1),
+                          error = function(e) {NULL})
+    
+    if(!is.null(exprModel)) {
+        statsDissected[[alg]] <- exprModel$stats
+    }
+    
+}
+
+# Plot performance original vs dissected
 
 
+
+for (metric in rownames(statsOriginal[[1]])[-7]) {
+    
+    perfPlotOrig <- c()
+    perfPlotDissect <- c()
+    
+    for (alg in selmethodsList) {
+        for (methodML in c("rf", "knn", "svmLinear")) {
+            perfPlotOrig <- c(perfPlotOrig, statsOriginal[[alg]][metric, methodML])
+            perfPlotDissect <- c(perfPlotDissect, statsDissected[[alg]][metric, methodML])
+        }
+    }
+    
+    plot(perfPlotOrig, perfPlotDissect, xlim = c(min(c(perfPlotOrig, perfPlotDissect)), max(c(perfPlotOrig, perfPlotDissect))), 
+         ylim = c(min(c(perfPlotOrig, perfPlotDissect)), max(c(perfPlotOrig, perfPlotDissect))),
+         main=metric, xlab = paste(metric, "Original"), ylab = paste(metric, "Dissected"), pch=16)
+    abline(coef = c(0,1), col="red")
+}
+
+
+
+# Save a single figure with 6 square plots (3 rows x 2 columns)
+pdf("figures/SupplementaryFigure2.pdf", width = 8, height = 12)
+
+par(mfrow = c(3, 2),      # 6 panels
+    pty   = "s",         # square plotting region
+    mar   = c(4, 4, 3, 1))
+
+panel_labels <- letters[1:6]
+i <- 1
+
+for (metric in rownames(statsOriginal[[1]])[-7]) {
+    
+    perfPlotOrig <- c()
+    perfPlotDissect <- c()
+    
+    for (alg in selmethodsList) {
+        for (methodML in c("rf", "knn", "svmLinear")) {
+            perfPlotOrig <- c(perfPlotOrig, statsOriginal[[alg]][metric, methodML])
+            perfPlotDissect <- c(perfPlotDissect, statsDissected[[alg]][metric, methodML])
+        }
+    }
+    
+    lims <- range(c(perfPlotOrig, perfPlotDissect))
+    
+    plot(perfPlotOrig, perfPlotDissect,
+         xlim = lims,
+         ylim = lims,
+         main = metric,
+         xlab = paste(metric, "Original"),
+         ylab = paste(metric, "Dissected"),
+         pch  = 16)
+    
+    abline(0, 1, col = "red")
+    
+    # Add panel label (a–f)
+    mtext(panel_labels[i], side = 3, line = 1, adj = 0, font = 2)
+    
+    i <- i + 1
+}
+
+dev.off()
