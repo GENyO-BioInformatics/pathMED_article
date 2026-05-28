@@ -92,43 +92,6 @@ algs <- c("M-Scores", "GSVA", "ssGSEA", "singscore", "Plage", "Z-score", "AUCell
         "MDT", "MLM", "ORA", "UDT", "ULM", "FGSEA", "norm_FGSEA", "WMEAN", 
         "norm_WMEAN", "corr_WMEAN", "WSUM", "norm_WSUM", "corr_WSUM")
 
-# SCORES <- list()
-# SCORES.d <- list()
-# gc()
-# 
-# for(i in 1:length(algs)){
-#   alg <- algs[i]
-#   print(alg)
-#   
-#   if(alg=="MLM"){
-#     gnset <- dbs.f[[1]]
-#   } else{
-#     gnset <- dbs[[1]]
-#   }
-#   
-#   ncores <- ifelse(alg %in% c("M-Scores", "MDT", "UDT", "ULM"), detectCores()-2, 1)
-#   SCORES[[alg]] <- getScores(inputData = exprData, geneSets = gnset, method = alg,
-#                  labels = labels,cores = ncores)
-#   gc()
-# }
-# 
-# for(i in 1:length(algs)){
-#   alg <- algs[i]
-#   print(alg)
-#   
-#   if(alg=="MLM"){
-#     gnset <- dbs.f[[2]]
-#   } else{
-#     gnset <- dbs[[2]]
-#   }
-#   
-#   ncores <- ifelse(alg %in% c("M-Scores", "MDT", "UDT", "ULM"), detectCores()-2, 1)
-#   SCORES.d[[alg]] <- getScores(inputData = exprData, geneSets = gnset, method = alg,
-#                            labels = labels, cores = ncores)
-#   gc()
-# }
-
-# New code for revision
 
 run_scores <- function(db_obj) {
     
@@ -342,7 +305,6 @@ supplTable6$Genes.subset <- sapply(supplTable6$subset, function(x) {paste(REAC.d
 WriteXLS(supplTable6, "SupplTables/Supplementary Table 6.xlsx", row.names = F)
 
 
-## NEW FOR REVIEW
 ## Run models
 
 statsOriginal <- list()
@@ -375,8 +337,6 @@ for (alg in algs) {
 }
 
 # Plot performance original vs dissected
-
-
 
 for (metric in rownames(statsOriginal[[1]])[-7]) {
     
